@@ -6,12 +6,11 @@ import matplotlib.pyplot as plt
 import mplfinance as mpf
 import time
 
-# --- 1. 웹페이지 다크모드 강제 주입 (CSS) ---
+# --- 1. 웹페이지 다크모드 설정 ---
 st.set_page_config(page_title="Deep Search Predictor", layout="wide")
 
 st.markdown("""
     <style>
-    /* 배경 및 텍스트 전체 다크 모드 */
     .stApp { background-color: #0E1117; color: white; }
     [data-testid="stSidebar"] { background-color: #161B22; border-right: 1px solid #30363D; }
     .stMetric { background-color: #1C2128; border: 1px solid #30363D; padding: 15px; border-radius: 10px; }
@@ -19,7 +18,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. 데이터 수집 함수 (글로벌 우회망) ---
+# --- 2. 데이터 수집 (글로벌 우회망) ---
 def get_binance_data(symbol, interval, total_candles):
     clean_symbol = symbol.replace("-", "").upper() + "USDT"
     url = "https://data-api.binance.vision/api/v3/klines"
@@ -38,7 +37,6 @@ def get_binance_data(symbol, interval, total_candles):
     for col in ['open', 'high', 'low', 'close', 'volume']:
         df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
         
-    # 한국 시간(KST) 보정: UTC + 9시간
     df['time'] = pd.to_datetime(df['time'], unit='ms') + pd.Timedelta(hours=9)
     df.set_index('time', inplace=True)
     return df
@@ -61,24 +59,29 @@ run_btn = st.sidebar.button("🚀 즉시 분석 시작", use_container_width=Tru
 st.title(f"🔥 {symbol} 딥서치 예측기 ({interval})")
 
 if run_btn or refresh_opt != "사용 안 함":
-    with st.spinner('딥러닝 패턴 매칭 중...'):
+    with st.spinner('패턴 분석 중...'):
         try:
             df = get_binance_data(symbol, interval, total_candles)
             p_len, f_len = 60, 20
             
-            # 미래 인덱스 생성 (한국 시간 기준)
             last_t = df.index[-1]
             t_gap = df.index[-1] - df.index[-2]
             f_idx = [last_t + t_gap * (i+1) for i in range(f_len)]
             f_df = pd.DataFrame(index=f_idx, columns=df.columns)
             
             df_total = pd.concat([df, f_df])
+            
+            # 🚨 [해결] 예측 컬럼들을 미리 NaN으로 생성 (KeyError 방지)
+            for side in ['up', 'down']:
+                for col in ['open', 'high', 'low', 'close']:
+                    df_total[f'{side}_{col}'] = np.nan
+            
             curr_close = df['close'].iloc[-1]
             df_total['close_temp'] = df_total['close'].fillna(curr_close).astype(float)
             df_total['high_temp'] = df_total['high'].fillna(curr_close).astype(float)
             df_total['low_temp'] = df_total['low'].fillna(curr_close).astype(float)
             
-            # 5대 지표 계산
+            # 지표 계산
             df_total['ema12'] = df_total['close_temp'].ewm(span=12, adjust=False).mean()
             df_total['ema26'] = df_total['close_temp'].ewm(span=26, adjust=False).mean()
             df_total['hma'] = wma_safe(wma_safe(df_total['close_temp'], 25) * 2 - wma_safe(df_total['close_temp'], 50), 7)
@@ -93,7 +96,7 @@ if run_btn or refresh_opt != "사용 안 함":
             df_total['spanA'] = ((conv + base) / 2).shift(26)
             df_total['spanB'] = ((df_total['high_temp'].rolling(52).max() + df_total['low_temp'].rolling(52).min()) / 2).shift(26)
 
-            # 패턴 매칭 로직
+            # 패턴 매칭
             feat = (df_total['ema12']/df_total['ema26']).values
             curr_v = feat[-f_len-p_len : -f_len]
             distances = []
@@ -115,7 +118,7 @@ if run_btn or refresh_opt != "사용 안 함":
                 if paths:
                     df_total.loc[f_idx, [f'{side}_open', f'{side}_high', f'{side}_low', f'{side}_close']] = np.mean(paths, axis=0) * curr_close
 
-            # 차트 그리기
+            # 시각화 데이터
             plot_df = df_total.iloc[-160:].copy()
             mc = mpf.make_marketcolors(up='#26a69a', down='#ef5350', edge='inherit', wick='inherit', volume='in')
             dark_s = mpf.make_mpf_style(marketcolors=mc, facecolor='#0E1117', figcolor='#0E1117', gridcolor='#30363D', rc={'text.color': 'white', 'axes.labelcolor': 'white', 'xtick.color': 'white', 'ytick.color': 'white'})
@@ -131,27 +134,27 @@ if run_btn or refresh_opt != "사용 안 함":
             fig, axlist = mpf.plot(plot_df[['open','high','low','close','volume']], type='candle', style=dark_s, addplot=apds, returnfig=True, figratio=(16,9), panel_ratios=(4,1.2,1.2), tight_layout=True,
                                    fill_between=dict(y1=plot_df['spanA'].values, y2=plot_df['spanB'].values, where=np.array([i < (len(plot_df)-f_len) for i in range(len(plot_df))]), alpha=0.1, color='#757575'))
             
-            # 미래 예측 구역 표시
             axlist[0].axvspan(len(plot_df)-f_len-0.5, len(plot_df)-0.5, color='#FFD700', alpha=0.03)
             
             for side, color, offset in [('up', '#00BFFF', -0.2), ('down', '#9370DB', 0.2)]:
-                if f'{side}_open' in plot_df.columns:
-                    for i in range(f_len):
-                        idx = len(plot_df) - f_len + i
-                        row = plot_df.iloc[idx]
-                        if not pd.isna(row[f'{side}_open']):
-                            axlist[0].vlines(idx + offset, row[f'{side}_low'], row[f'{side}_high'], color=color, linewidth=1)
-                            axlist[0].vlines(idx + offset, min(row[f'{side}_open'], row[f'{side}_close']), max(row[f'{side}_open'], row[f'{side}_close']), color=color, linewidth=4)
+                for i in range(f_len):
+                    idx = len(plot_df) - f_len + i
+                    row = plot_df.iloc[idx]
+                    if not pd.isna(row[f'{side}_open']):
+                        axlist[0].vlines(idx + offset, row[f'{side}_low'], row[f'{side}_high'], color=color, linewidth=1)
+                        axlist[0].vlines(idx + offset, min(row[f'{side}_open'], row[f'{side}_close']), max(row[f'{side}_open'], row[f'{side}_close']), color=color, linewidth=4)
 
-            # 🚨 [해결] Y축 자동 확장 로직
-            all_h = plot_df[['high', 'up_high', 'down_high']].max().max()
-            all_l = plot_df[['low', 'up_low', 'down_low']].min().min()
+            # 🚨 [수정] Y축 자동 확장 로직 (컬럼 존재 여부 체크)
+            check_cols_h = [c for c in ['high', 'up_high', 'down_high'] if c in plot_df.columns]
+            check_cols_l = [c for c in ['low', 'up_low', 'down_low'] if c in plot_df.columns]
+            
+            all_h = plot_df[check_cols_h].max().max()
+            all_l = plot_df[check_cols_l].min().min()
             pad = (all_h - all_l) * 0.1
             axlist[0].set_ylim(all_l - pad, all_h + pad)
 
             st.pyplot(fig)
             
-            # 결과 지표
             c1, c2 = st.columns(2)
             c1.metric("📈 상승 확률", f"{(len(up_paths)/5)*100:.0f}%", f"{len(up_paths)}건")
             c2.metric("📉 하락 확률", f"{(len(down_paths)/5)*100:.0f}%", f"{len(down_paths)}건")
@@ -160,7 +163,7 @@ if run_btn or refresh_opt != "사용 안 함":
         except Exception as e:
             st.error(f"오류 발생: {e}")
 
-# --- 5. 자동 갱신 타이머 (맨 밑으로 이동) ---
+# --- 5. 자동 갱신 타이머 ---
 if refresh_opt != "사용 안 함":
     mins = int(refresh_opt.replace("분", ""))
     time.sleep(mins * 60)
