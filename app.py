@@ -8,13 +8,13 @@ import mplfinance as mpf
 # --- 웹페이지 기본 설정 ---
 st.set_page_config(page_title="Deep Search Predictor Pro Max", layout="wide", initial_sidebar_state="expanded")
 
-# --- 1. 바이낸스 US (미국 서버 전용 무적 우회망) ---
+# --- 1. 바이낸스 글로벌 데이터 전용망 (미국 서버 차단 우회) ---
 def get_binance_data(symbol, interval, total_candles):
     clean_symbol = symbol.replace("-", "").upper()
     if "USDT" not in clean_symbol: clean_symbol += "USDT"
     
-    # 🚨 [핵심 해결책] 클라우드가 미국에 있으므로, 미국 전용 거래소인 바이낸스.US로 접속!
-    url = "https://api.binance.us/api/v3/klines"
+    # 🚨 [핵심 해결책] 거래량이 없는 US가 아니라, 바이낸스 공식 '과거 데이터 전용 우회 서버'로 접속!
+    url = "https://data-api.binance.vision/api/v3/klines"
     all_data = []
     end_time = None
     
@@ -27,7 +27,7 @@ def get_binance_data(symbol, interval, total_candles):
             response = requests.get(url, params=params)
             res = response.json()
         except Exception as e:
-            raise ValueError("데이터를 불러오지 못했습니다. (거래소 서버 응답 오류)")
+            raise ValueError("데이터를 불러오지 못했습니다. (서버 응답 오류)")
             
         if isinstance(res, dict) and 'msg' in res:
             raise ValueError(f"API 에러: {res['msg']}")
