@@ -6,14 +6,21 @@ import matplotlib.pyplot as plt
 import mplfinance as mpf
 import time
 
-# --- 1. 웹페이지 다크모드 설정 ---
+# --- 1. 웹페이지 다크모드 설정 (CSS) ---
 st.set_page_config(page_title="Deep Search Predictor", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #0E1117; color: white; }
     [data-testid="stSidebar"] { background-color: #161B22; border-right: 1px solid #30363D; }
-    .stMetric { background-color: #1C2128; border: 1px solid #30363D; padding: 15px; border-radius: 10px; }
+    /* 메트릭 박스 스타일 (우측 배치용) */
+    [data-testid="stMetric"] { 
+        background-color: #1C2128; 
+        border: 1px solid #30363D; 
+        padding: 20px; 
+        border-radius: 12px;
+        margin-bottom: 15px;
+    }
     h1, h2, h3, p { color: #E6EDF3 !important; }
     </style>
     """, unsafe_allow_html=True)
@@ -37,6 +44,7 @@ def get_binance_data(symbol, interval, total_candles):
     for col in ['open', 'high', 'low', 'close', 'volume']:
         df[col] = pd.to_numeric(df[col], errors='coerce').astype(float)
         
+    # 한국 시간(KST) 보정: UTC + 9시간
     df['time'] = pd.to_datetime(df['time'], unit='ms') + pd.Timedelta(hours=9)
     df.set_index('time', inplace=True)
     return df
@@ -49,7 +57,8 @@ def wma_safe(s, p):
 st.sidebar.title("⚙️ 예측기 설정")
 symbol = st.sidebar.selectbox("종목", ["BTC", "ETH", "SOL", "XRP", "DOGE"], index=0)
 interval = st.sidebar.selectbox("분봉", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], index=3)
-limit_val = st.sidebar.selectbox("과거 탐색 범위", ["1,000봉", "3,000봉", "5,000봉"], index=1)
+# 🚨 사용자 요청대로 최대 5,000봉 유지
+limit_val = st.sidebar.selectbox("과거 탐색 범위", ["1,000봉", "3,000봉", "5,000봉"], index=2)
 total_candles = int(limit_val.replace("봉", "").replace(",", ""))
 
 refresh_opt = st.sidebar.selectbox("🔄 자동 갱신 간격", ["사용 안 함", "5분", "10분", "30분"], index=0)
@@ -71,7 +80,7 @@ if run_btn or refresh_opt != "사용 안 함":
             
             df_total = pd.concat([df, f_df])
             
-            # 🚨 [해결] 예측 컬럼들을 미리 NaN으로 생성 (KeyError 방지)
+            # 예측 컬럼 미리 생성
             for side in ['up', 'down']:
                 for col in ['open', 'high', 'low', 'close']:
                     df_total[f'{side}_{col}'] = np.nan
@@ -118,7 +127,7 @@ if run_btn or refresh_opt != "사용 안 함":
                 if paths:
                     df_total.loc[f_idx, [f'{side}_open', f'{side}_high', f'{side}_low', f'{side}_close']] = np.mean(paths, axis=0) * curr_close
 
-            # 시각화 데이터
+            # --- 시각화 데이터 준비 ---
             plot_df = df_total.iloc[-160:].copy()
             mc = mpf.make_marketcolors(up='#26a69a', down='#ef5350', edge='inherit', wick='inherit', volume='in')
             dark_s = mpf.make_mpf_style(marketcolors=mc, facecolor='#0E1117', figcolor='#0E1117', gridcolor='#30363D', rc={'text.color': 'white', 'axes.labelcolor': 'white', 'xtick.color': 'white', 'ytick.color': 'white'})
@@ -144,21 +153,34 @@ if run_btn or refresh_opt != "사용 안 함":
                         axlist[0].vlines(idx + offset, row[f'{side}_low'], row[f'{side}_high'], color=color, linewidth=1)
                         axlist[0].vlines(idx + offset, min(row[f'{side}_open'], row[f'{side}_close']), max(row[f'{side}_open'], row[f'{side}_close']), color=color, linewidth=4)
 
-            # 🚨 [수정] Y축 자동 확장 로직 (컬럼 존재 여부 체크)
+            # Y축 자동 확장
             check_cols_h = [c for c in ['high', 'up_high', 'down_high'] if c in plot_df.columns]
             check_cols_l = [c for c in ['low', 'up_low', 'down_low'] if c in plot_df.columns]
-            
             all_h = plot_df[check_cols_h].max().max()
             all_l = plot_df[check_cols_l].min().min()
             pad = (all_h - all_l) * 0.1
             axlist[0].set_ylim(all_l - pad, all_h + pad)
 
-            st.pyplot(fig)
-            
-            c1, c2 = st.columns(2)
-            c1.metric("📈 상승 확률", f"{(len(up_paths)/5)*100:.0f}%", f"{len(up_paths)}건")
-            c2.metric("📉 하락 확률", f"{(len(down_paths)/5)*100:.0f}%", f"{len(down_paths)}건")
-            st.caption(f"최종 갱신 (한국시간): {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            # --- 🚨 [핵심 수정] 가로 레이아웃 배치 (차트 왼쪽, 지표 오른쪽) ---
+            col_chart, col_metrics = st.columns([3, 1]) # 3:1 비율로 나눔
+
+            with col_chart:
+                st.pyplot(fig) # 왼쪽에 차트 배치
+
+            with col_metrics:
+                # 오른쪽에 확률 지표 배치
+                st.subheader("💡 예측 결과")
+                up_moves = len(up_paths)
+                down_moves = len(down_paths)
+                # 항상 Top 5 기준으로 계산
+                up_prob = (up_moves / 5) * 100
+                down_prob = (down_moves / 5) * 100
+
+                st.metric(label="📈 상승 확률", value=f"{up_prob:.0f}%", delta=f"{up_moves}건")
+                st.metric(label="📉 하락 확률", value=f"{down_prob:.0f}%", delta=f"{down_moves}건")
+                st.write(f"과거 {limit_val} 속에서 가장 유사한 **Top 5 패턴**을 분석한 결과입니다.")
+                
+                st.caption(f"최종 갱신 (한국시간): {pd.Timestamp.now().strftime('%H:%M:%S')}")
 
         except Exception as e:
             st.error(f"오류 발생: {e}")
