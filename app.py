@@ -8,12 +8,13 @@ import mplfinance as mpf
 # --- 웹페이지 기본 설정 ---
 st.set_page_config(page_title="Deep Search Predictor Pro Max", layout="wide", initial_sidebar_state="expanded")
 
-# --- 1. 바이낸스 타임머신 데이터 수집 ---
+# --- 1. 바이낸스 타임머신 데이터 수집 (선물 우회망 적용) ---
 def get_binance_data(symbol, interval, total_candles):
     clean_symbol = symbol.replace("-", "").upper()
     if "USDT" not in clean_symbol: clean_symbol += "USDT"
     
-    url = "https://api.binance.com/api/v3/klines"
+    # 🚨 [핵심 수정] 미국 IP 차단을 피하기 위해 현물(api) 대신 선물(fapi) 망으로 접속
+    url = "https://fapi.binance.com/fapi/v1/klines"
     all_data = []
     end_time = None
     
@@ -23,6 +24,11 @@ def get_binance_data(symbol, interval, total_candles):
             params["endTime"] = end_time
             
         res = requests.get(url, params=params).json()
+        
+        # 🚨 [에러 방어막] 바이낸스가 데이터([])가 아닌 에러 메시지({})를 던질 경우 차단
+        if isinstance(res, dict):
+            raise ValueError(f"바이낸스 접속 에러 (서버 차단): {res.get('msg', '알 수 없는 오류')}")
+            
         if not res: break
             
         all_data = res + all_data
@@ -46,7 +52,7 @@ def wma_safe(s, p):
         res += s.shift(i) * weights[p - 1 - i]
     return res / w_sum
 
-# --- 왼쪽 사이드바 메뉴 (스마트폰/태블릿 터치용) ---
+# --- 왼쪽 사이드바 메뉴 ---
 st.sidebar.title("⚙️ 예측기 설정")
 symbol = st.sidebar.selectbox("종목 설정", ["BTC", "ETH", "SOL", "XRP", "DOGE"], index=0)
 interval = st.sidebar.selectbox("분봉 설정", ["1m", "5m", "15m", "30m", "1h", "2h", "4h", "1d"], index=3)
@@ -55,11 +61,9 @@ total_candles = int(limit_str.replace("봉", "").replace(",", ""))
 
 run_btn = st.sidebar.button("🚀 5대 지표 통합 딥서치 시작", use_container_width=True)
 
-# 메인 화면 타이틀
 st.title(f"🔥 {symbol} 딥서치 예측기 ({interval})")
 st.markdown("과거 데이터를 분석하여 가장 유사한 패턴 5개의 미래 20봉을 시뮬레이션합니다.")
 
-# 버튼을 누르면 실행
 if run_btn:
     with st.spinner(f'5대 지표 기준으로 과거 {total_candles}봉 딥서치 중... (잠시만 기다려주세요)'):
         try:
@@ -82,7 +86,6 @@ if run_btn:
             df_total['high_temp'] = df_total['high'].fillna(curr_close).astype(float)
             df_total['low_temp'] = df_total['low'].fillna(curr_close).astype(float)
             
-            # 3. 5대 지표 계산
             conv = (df_total['high_temp'].rolling(9).max() + df_total['low_temp'].rolling(9).min()) / 2
             base = (df_total['high_temp'].rolling(26).max() + df_total['low_temp'].rolling(26).min()) / 2
             df_total['conv'] = conv
@@ -109,7 +112,6 @@ if run_btn:
             feat_macd = df_total['macd_hist'] / df_total['close_temp']
             feat_rsi = df_total['rsi'] / 100.0 
             
-            # 4. Top 5 딥서치 로직
             curr_ema = feat_ema.iloc[-f_len-p_len : -f_len].values
             curr_hma = feat_hma.iloc[-f_len-p_len : -f_len].values
             curr_ichi = feat_ichi.iloc[-f_len-p_len : -f_len].values
@@ -168,7 +170,6 @@ if run_btn:
                 for col in ['conv', 'base', 'ema12', 'ema26', 'hma', 'macd_hist', 'rsi']:
                     df_total.loc[f_idx, col] = df_total[col].iloc[-f_len-1]
 
-            # 5. 차트 그리기 (Streamlit 용으로 figure 추출)
             plot_df = df_total.iloc[-160:].copy()
             ohlcv_df = plot_df[['open', 'high', 'low', 'close', 'volume']].astype(float)
             y1_cloud = plot_df['spanA'].astype(float).bfill().ffill().values
@@ -233,16 +234,14 @@ if run_btn:
             if matches > 0: 
                 axlist[0].legend(loc='upper left', fontsize=10, facecolor='#1e1e1e', edgecolor='#333333', labelcolor='white')
 
-            # --- 결과 출력 ---
             up_moves, down_moves = len(up_paths_ohlc), len(down_paths_ohlc)
             up_prob = (up_moves / matches) * 100 if matches > 0 else 0
             down_prob = (down_moves / matches) * 100 if matches > 0 else 0
             
-            # 레이아웃을 두 개로 나누어서 차트와 텍스트를 배치
             col1, col2 = st.columns([3, 1])
             
             with col1:
-                st.pyplot(fig) # 스트림릿에 차트 띄우기
+                st.pyplot(fig) 
                 
             with col2:
                 st.subheader("💡 예측 결과")
